@@ -30,7 +30,7 @@ export default function AdminUsers() {
 
   useEffect(() => { fetchUsers(); }, [filter]);
 
-  const updateStatus = async (userId: string, status: string) => {
+  const updateStatus = async (userId: string, status: 'pending_approval' | 'approved' | 'banned') => {
     const { error } = await supabase.from('profiles').update({ status }).eq('id', userId);
     if (error) {
       toast.error('Failed to update user status');
