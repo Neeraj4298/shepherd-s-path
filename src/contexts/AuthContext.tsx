@@ -40,7 +40,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .select('*')
       .eq('id', userId)
       .single();
-    if (data) setProfile(data);
+    if (data) {
+      setProfile({
+        id: data.id,
+        full_name: data.full_name,
+        instagram_username: data.instagram_username,
+        status: data.status as UserStatus,
+        created_at: data.created_at,
+        last_login: data.last_login,
+      });
+    }
     return data;
   };
 
@@ -60,7 +69,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSession(session);
         setUser(session?.user ?? null);
         if (session?.user) {
-          // Use setTimeout to avoid Supabase auth deadlock
           setTimeout(async () => {
             await fetchProfile(session.user.id);
             await fetchRole(session.user.id);
@@ -107,19 +115,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return { error };
 
-    // Check profile status
     if (data.user) {
       const profileData = await fetchProfile(data.user.id);
-      if (profileData?.status === 'pending_approval') {
+      if (profileData && profileData.status === 'pending_approval') {
         await supabase.auth.signOut();
         return { error: null, status: 'pending_approval' as UserStatus };
       }
-      if (profileData?.status === 'banned') {
+      if (profileData && profileData.status === 'banned') {
         await supabase.auth.signOut();
         return { error: null, status: 'banned' as UserStatus };
       }
       await fetchRole(data.user.id);
-      // Update last login
       await supabase.from('profiles').update({ last_login: new Date().toISOString() }).eq('id', data.user.id);
     }
     return { error: null };
