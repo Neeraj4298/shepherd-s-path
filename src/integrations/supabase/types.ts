@@ -519,25 +519,31 @@ export type Database = {
       }
       study_groups: {
         Row: {
+          chat_mode: Database["public"]["Enums"]["group_chat_mode"]
           created_at: string
           created_by: string | null
           description: string | null
           id: string
           name: string
+          visibility: Database["public"]["Enums"]["group_visibility"]
         }
         Insert: {
+          chat_mode?: Database["public"]["Enums"]["group_chat_mode"]
           created_at?: string
           created_by?: string | null
           description?: string | null
           id?: string
           name: string
+          visibility?: Database["public"]["Enums"]["group_visibility"]
         }
         Update: {
+          chat_mode?: Database["public"]["Enums"]["group_chat_mode"]
           created_at?: string
           created_by?: string | null
           description?: string | null
           id?: string
           name?: string
+          visibility?: Database["public"]["Enums"]["group_visibility"]
         }
         Relationships: []
       }
@@ -720,6 +726,8 @@ export type Database = {
     Enums: {
       app_role: "user" | "admin"
       chat_room_type: "general" | "group" | "prayer"
+      group_chat_mode: "open" | "broadcast"
+      group_visibility: "public" | "private_visible" | "private_hidden"
       study_plan_type: "personal" | "global"
       support_contact_type: "whatsapp" | "instagram"
       testimony_status: "pending" | "approved" | "rejected"
@@ -853,6 +861,8 @@ export const Constants = {
     Enums: {
       app_role: ["user", "admin"],
       chat_room_type: ["general", "group", "prayer"],
+      group_chat_mode: ["open", "broadcast"],
+      group_visibility: ["public", "private_visible", "private_hidden"],
       study_plan_type: ["personal", "global"],
       support_contact_type: ["whatsapp", "instagram"],
       testimony_status: ["pending", "approved", "rejected"],
