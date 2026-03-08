@@ -3,7 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Users, UserPlus, LogOut, Send, Lock, Eye, EyeOff, Megaphone, MessageSquare, ArrowLeft } from 'lucide-react';
+import { Users, UserPlus, LogOut, Send, Lock, Eye, EyeOff, Megaphone, MessageSquare, ArrowLeft, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface StudyGroup {
@@ -15,6 +15,7 @@ interface StudyGroup {
   created_at: string;
   member_count?: number;
   is_member?: boolean;
+  join_status?: string | null;
 }
 
 interface ChatMessage {
@@ -59,9 +60,18 @@ export default function StudyGroupsPage() {
     const { data: memberships } = await supabase.from('group_members').select('group_id').eq('user_id', user.id);
     const memberSet = new Set(memberships?.map(m => m.group_id) || []);
 
+    // Fetch join requests for this user
+    const { data: requests } = await supabase.from('group_join_requests').select('group_id, status').eq('user_id', user.id);
+    const requestMap = new Map(requests?.map(r => [r.group_id, r.status]) || []);
+
     const enriched = await Promise.all(groupsData.map(async g => {
       const { count } = await supabase.from('group_members').select('id', { count: 'exact', head: true }).eq('group_id', g.id);
-      return { ...g, member_count: count || 0, is_member: memberSet.has(g.id) };
+      return {
+        ...g,
+        member_count: count || 0,
+        is_member: memberSet.has(g.id),
+        join_status: requestMap.get(g.id) || null,
+      };
     }));
 
     setGroups(enriched);
@@ -75,6 +85,13 @@ export default function StudyGroupsPage() {
     else { toast.success('Joined group!'); fetchGroups(); }
   };
 
+  const requestToJoin = async (groupId: string) => {
+    if (!user) return;
+    const { error } = await supabase.from('group_join_requests').insert({ group_id: groupId, user_id: user.id });
+    if (error) toast.error('Already requested or error');
+    else { toast.success('Join request sent! Waiting for admin approval.'); fetchGroups(); }
+  };
+
   const leaveGroup = async (groupId: string) => {
     if (!user) return;
     const { error } = await supabase.from('group_members').delete().eq('group_id', groupId).eq('user_id', user.id);
@@ -86,7 +103,6 @@ export default function StudyGroupsPage() {
     setSelectedGroup(group);
     setActiveTab('chat');
 
-    // Fetch chat room for this group
     const { data: room } = await supabase.from('chat_rooms').select('id').eq('group_id', group.id).single();
     if (room) {
       setChatRoomId(room.id);
@@ -97,7 +113,6 @@ export default function StudyGroupsPage() {
       setMessages([]);
     }
 
-    // Fetch members
     const { data: mems } = await supabase.from('group_members').select('user_id, profiles(full_name)').eq('group_id', group.id);
     if (mems) setMembers(mems as any);
   };
@@ -129,11 +144,7 @@ export default function StudyGroupsPage() {
 
   const sendMessage = async () => {
     if (!newMessage.trim() || !user || !chatRoomId) return;
-    await supabase.from('chat_messages').insert({
-      room_id: chatRoomId,
-      user_id: user.id,
-      content: newMessage.trim(),
-    });
+    await supabase.from('chat_messages').insert({ room_id: chatRoomId, user_id: user.id, content: newMessage.trim() });
     setNewMessage('');
   };
 
@@ -151,11 +162,9 @@ export default function StudyGroupsPage() {
 
   if (loading) return <div className="flex justify-center py-20"><div className="h-8 w-8 animate-spin rounded-full border-4 border-accent border-t-transparent" /></div>;
 
-  // Group detail view with WhatsApp-style chat
   if (selectedGroup) {
     return (
       <div className="flex flex-col h-[calc(100vh-140px)] animate-fade-in">
-        {/* Header */}
         <div className="flex items-center gap-3 pb-4 border-b border-border">
           <button onClick={() => setSelectedGroup(null)} className="text-muted-foreground hover:text-foreground">
             <ArrowLeft className="h-5 w-5" />
@@ -200,7 +209,6 @@ export default function StudyGroupsPage() {
           </div>
         ) : (
           <>
-            {/* Chat messages - WhatsApp style */}
             <div className="flex-1 overflow-auto py-4 space-y-2 px-1">
               {selectedGroup.chat_mode === 'broadcast' && !isAdmin && (
                 <div className="text-center py-3">
@@ -224,7 +232,7 @@ export default function StudyGroupsPage() {
                         : 'bg-card border border-border text-foreground rounded-bl-md'
                     }`}>
                       {!isMe && (
-                        <p className={`text-xs font-semibold font-body mb-0.5 ${isMe ? 'text-accent-foreground/70' : 'text-accent'}`}>
+                        <p className="text-xs font-semibold font-body mb-0.5 text-accent">
                           {(msg as any).profiles?.full_name || 'Unknown'}
                         </p>
                       )}
@@ -239,7 +247,6 @@ export default function StudyGroupsPage() {
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Message input */}
             {canSendMessage() && chatRoomId && (
               <div className="flex gap-2 pt-3 border-t border-border">
                 <Input
@@ -260,7 +267,6 @@ export default function StudyGroupsPage() {
     );
   }
 
-  // Groups list view
   return (
     <div className="space-y-6 animate-fade-in">
       <div>
@@ -302,16 +308,22 @@ export default function StudyGroupsPage() {
                       <LogOut className="h-4 w-4" />
                     </Button>
                   </>
+                ) : g.visibility === 'public' ? (
+                  <Button variant="gold" size="sm" onClick={() => joinGroup(g.id)} className="font-body flex-1">
+                    <UserPlus className="h-4 w-4 mr-1" /> Join Group
+                  </Button>
+                ) : g.join_status === 'pending' ? (
+                  <div className="flex items-center gap-2 text-sm text-amber-600 font-body">
+                    <Clock className="h-4 w-4" /> Request pending...
+                  </div>
+                ) : g.join_status === 'rejected' ? (
+                  <div className="flex items-center gap-2 text-sm text-destructive font-body">
+                    Request declined
+                  </div>
                 ) : (
-                  g.visibility === 'public' ? (
-                    <Button variant="gold" size="sm" onClick={() => joinGroup(g.id)} className="font-body flex-1">
-                      <UserPlus className="h-4 w-4 mr-1" /> Join Group
-                    </Button>
-                  ) : (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground font-body">
-                      <Lock className="h-4 w-4" /> Admin invite only
-                    </div>
-                  )
+                  <Button variant="outline" size="sm" onClick={() => requestToJoin(g.id)} className="font-body flex-1">
+                    <Lock className="h-4 w-4 mr-1" /> Request to Join
+                  </Button>
                 )}
               </div>
             </div>
