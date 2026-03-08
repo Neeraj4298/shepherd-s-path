@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-import { Plus, Trash2, Users, Lock, Eye, EyeOff, Megaphone, MessageSquare, UserPlus } from 'lucide-react';
+import { Plus, Trash2, Users, Lock, Eye, EyeOff, Megaphone, MessageSquare, UserPlus, Check, X } from 'lucide-react';
 
 interface StudyGroup {
   id: string;
@@ -23,6 +23,14 @@ interface Member {
   profiles: { full_name: string } | null;
 }
 
+interface JoinRequest {
+  id: string;
+  user_id: string;
+  status: string;
+  created_at: string;
+  profiles?: { full_name: string } | null;
+}
+
 export default function AdminGroups() {
   const { user } = useAuth();
   const [groups, setGroups] = useState<StudyGroup[]>([]);
@@ -33,9 +41,11 @@ export default function AdminGroups() {
   const [creating, setCreating] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState<StudyGroup | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
+  const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [allUsers, setAllUsers] = useState<{ id: string; full_name: string }[]>([]);
   const [addingUser, setAddingUser] = useState(false);
   const [userSearch, setUserSearch] = useState('');
+  const [activeTab, setActiveTab] = useState<'members' | 'requests'>('members');
 
   const fetchGroups = async () => {
     const { data } = await supabase.from('study_groups').select('*').order('created_at', { ascending: false });
@@ -45,6 +55,20 @@ export default function AdminGroups() {
   const fetchMembers = async (groupId: string) => {
     const { data } = await supabase.from('group_members').select('id, user_id, profiles(full_name)').eq('group_id', groupId);
     if (data) setMembers(data as any);
+  };
+
+  const fetchJoinRequests = async (groupId: string) => {
+    const { data } = await supabase
+      .from('group_join_requests')
+      .select('*')
+      .eq('group_id', groupId)
+      .order('created_at', { ascending: false });
+    if (data) {
+      const userIds = data.map(r => r.user_id);
+      const { data: profiles } = await supabase.from('profiles').select('id, full_name').in('id', userIds);
+      const profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
+      setJoinRequests(data.map(r => ({ ...r, profiles: profileMap.get(r.user_id) || null })) as JoinRequest[]);
+    }
   };
 
   const fetchAllUsers = async () => {
@@ -67,13 +91,8 @@ export default function AdminGroups() {
 
     if (error) { toast.error('Failed to create group'); setCreating(false); return; }
 
-    // Auto-create a chat room for this group
     if (group) {
-      await supabase.from('chat_rooms').insert({
-        name: `${name.trim()} Chat`,
-        type: 'group' as const,
-        group_id: group.id,
-      });
+      await supabase.from('chat_rooms').insert({ name: `${name.trim()} Chat`, type: 'group' as const, group_id: group.id });
     }
 
     toast.success('Group created with chat room!');
@@ -89,7 +108,9 @@ export default function AdminGroups() {
 
   const openGroup = (g: StudyGroup) => {
     setSelectedGroup(g);
+    setActiveTab('members');
     fetchMembers(g.id);
+    fetchJoinRequests(g.id);
     setAddingUser(false);
   };
 
@@ -104,6 +125,23 @@ export default function AdminGroups() {
     await supabase.from('group_members').delete().eq('id', memberId);
     toast.success('Member removed');
     if (selectedGroup) fetchMembers(selectedGroup.id);
+  };
+
+  const approveRequest = async (request: JoinRequest) => {
+    if (!selectedGroup) return;
+    // Add to group_members
+    await supabase.from('group_members').insert({ group_id: selectedGroup.id, user_id: request.user_id });
+    // Update request status
+    await supabase.from('group_join_requests').update({ status: 'approved' }).eq('id', request.id);
+    toast.success('Request approved & member added');
+    fetchMembers(selectedGroup.id);
+    fetchJoinRequests(selectedGroup.id);
+  };
+
+  const rejectRequest = async (requestId: string) => {
+    await supabase.from('group_join_requests').update({ status: 'rejected' }).eq('id', requestId);
+    toast.success('Request rejected');
+    if (selectedGroup) fetchJoinRequests(selectedGroup.id);
   };
 
   const updateGroup = async (field: string, value: string) => {
@@ -127,6 +165,7 @@ export default function AdminGroups() {
   };
 
   const nonMembers = allUsers.filter(u => !members.some(m => m.user_id === u.id)).filter(u => u.full_name.toLowerCase().includes(userSearch.toLowerCase()));
+  const pendingRequests = joinRequests.filter(r => r.status === 'pending');
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -146,27 +185,18 @@ export default function AdminGroups() {
 
             {selectedGroup.description && <p className="text-muted-foreground font-body">{selectedGroup.description}</p>}
 
-            {/* Settings */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label className="font-body font-medium">Visibility</Label>
-                <select
-                  value={selectedGroup.visibility}
-                  onChange={e => updateGroup('visibility', e.target.value)}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-body"
-                >
+                <select value={selectedGroup.visibility} onChange={e => updateGroup('visibility', e.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-body">
                   <option value="public">🌐 Public — Anyone can see & join</option>
-                  <option value="private_visible">🔒 Private (Visible) — Users see but can't join</option>
+                  <option value="private_visible">🔒 Private (Visible) — Users see but must request</option>
                   <option value="private_hidden">👁️‍🗨️ Private (Hidden) — Only members see it</option>
                 </select>
               </div>
               <div className="space-y-2">
                 <Label className="font-body font-medium">Chat Mode</Label>
-                <select
-                  value={selectedGroup.chat_mode}
-                  onChange={e => updateGroup('chat_mode', e.target.value)}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-body"
-                >
+                <select value={selectedGroup.chat_mode} onChange={e => updateGroup('chat_mode', e.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-body">
                   <option value="open">💬 Open — Everyone can chat</option>
                   <option value="broadcast">📢 Broadcast — Admin only messages</option>
                 </select>
@@ -174,52 +204,104 @@ export default function AdminGroups() {
             </div>
           </div>
 
-          {/* Members */}
-          <div className="rounded-xl bg-card border border-border p-5 shadow-soft space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-heading text-lg font-semibold text-foreground flex items-center gap-2">
-                <Users className="h-5 w-5" /> Members ({members.length})
-              </h3>
-              <Button size="sm" variant="gold" onClick={() => setAddingUser(!addingUser)} className="font-body">
-                <UserPlus className="h-4 w-4 mr-1" /> Add Member
-              </Button>
-            </div>
-
-            {addingUser && (
-              <div className="rounded-lg bg-muted p-4 space-y-3">
-                <Input value={userSearch} onChange={e => setUserSearch(e.target.value)} placeholder="Search users..." className="font-body" />
-                <div className="max-h-48 overflow-auto space-y-1">
-                  {nonMembers.map(u => (
-                    <button
-                      key={u.id}
-                      onClick={() => addMember(u.id)}
-                      className="w-full flex items-center justify-between rounded-md px-3 py-2 text-sm font-body hover:bg-background transition-colors"
-                    >
-                      <span className="text-foreground">{u.full_name}</span>
-                      <Plus className="h-4 w-4 text-accent" />
-                    </button>
-                  ))}
-                  {nonMembers.length === 0 && <p className="text-xs text-muted-foreground font-body text-center py-2">No users to add</p>}
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-1">
-              {members.map(m => (
-                <div key={m.id} className="flex items-center justify-between rounded-md px-3 py-2 hover:bg-muted/50">
-                  <span className="font-body text-sm text-foreground">{(m as any).profiles?.full_name || 'Unknown'}</span>
-                  <Button size="sm" variant="ghost" onClick={() => removeMember(m.id)} className="text-destructive h-8 w-8 p-0">
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
-                </div>
-              ))}
-              {members.length === 0 && <p className="text-muted-foreground font-body text-sm text-center py-4">No members yet</p>}
-            </div>
+          {/* Tabs */}
+          <div className="flex gap-2">
+            <Button size="sm" variant={activeTab === 'members' ? 'default' : 'outline'} onClick={() => setActiveTab('members')} className="font-body">
+              <Users className="h-4 w-4 mr-1" /> Members ({members.length})
+            </Button>
+            <Button size="sm" variant={activeTab === 'requests' ? 'default' : 'outline'} onClick={() => setActiveTab('requests')} className="font-body">
+              Join Requests
+              {pendingRequests.length > 0 && (
+                <span className="ml-1 inline-flex items-center justify-center h-5 w-5 rounded-full bg-destructive text-destructive-foreground text-xs">
+                  {pendingRequests.length}
+                </span>
+              )}
+            </Button>
           </div>
+
+          {activeTab === 'members' ? (
+            <div className="rounded-xl bg-card border border-border p-5 shadow-soft space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-heading text-lg font-semibold text-foreground flex items-center gap-2">
+                  <Users className="h-5 w-5" /> Members ({members.length})
+                </h3>
+                <Button size="sm" variant="gold" onClick={() => setAddingUser(!addingUser)} className="font-body">
+                  <UserPlus className="h-4 w-4 mr-1" /> Add Member
+                </Button>
+              </div>
+
+              {addingUser && (
+                <div className="rounded-lg bg-muted p-4 space-y-3">
+                  <Input value={userSearch} onChange={e => setUserSearch(e.target.value)} placeholder="Search users..." className="font-body" />
+                  <div className="max-h-48 overflow-auto space-y-1">
+                    {nonMembers.map(u => (
+                      <button key={u.id} onClick={() => addMember(u.id)} className="w-full flex items-center justify-between rounded-md px-3 py-2 text-sm font-body hover:bg-background transition-colors">
+                        <span className="text-foreground">{u.full_name}</span>
+                        <Plus className="h-4 w-4 text-accent" />
+                      </button>
+                    ))}
+                    {nonMembers.length === 0 && <p className="text-xs text-muted-foreground font-body text-center py-2">No users to add</p>}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-1">
+                {members.map(m => (
+                  <div key={m.id} className="flex items-center justify-between rounded-md px-3 py-2 hover:bg-muted/50">
+                    <span className="font-body text-sm text-foreground">{(m as any).profiles?.full_name || 'Unknown'}</span>
+                    <Button size="sm" variant="ghost" onClick={() => removeMember(m.id)} className="text-destructive h-8 w-8 p-0">
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
+                ))}
+                {members.length === 0 && <p className="text-muted-foreground font-body text-sm text-center py-4">No members yet</p>}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-xl bg-card border border-border p-5 shadow-soft space-y-4">
+              <h3 className="font-heading text-lg font-semibold text-foreground">Join Requests</h3>
+
+              {pendingRequests.length > 0 ? (
+                <div className="space-y-2">
+                  {pendingRequests.map(r => (
+                    <div key={r.id} className="flex items-center justify-between rounded-md px-3 py-2 bg-accent/5 border border-accent/20">
+                      <div>
+                        <span className="font-body text-sm text-foreground">{r.profiles?.full_name || 'Unknown'}</span>
+                        <p className="text-xs text-muted-foreground font-body">{new Date(r.created_at).toLocaleDateString()}</p>
+                      </div>
+                      <div className="flex gap-1">
+                        <Button size="sm" variant="gold" onClick={() => approveRequest(r)} className="h-8 px-3 font-body">
+                          <Check className="h-3 w-3 mr-1" /> Approve
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => rejectRequest(r.id)} className="h-8 px-3 text-destructive font-body">
+                          <X className="h-3 w-3 mr-1" /> Reject
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-muted-foreground font-body text-sm text-center py-4">No pending join requests</p>
+              )}
+
+              {joinRequests.filter(r => r.status !== 'pending').length > 0 && (
+                <div className="space-y-1 pt-2 border-t border-border">
+                  <p className="text-xs text-muted-foreground font-body font-medium uppercase tracking-wide">History</p>
+                  {joinRequests.filter(r => r.status !== 'pending').map(r => (
+                    <div key={r.id} className="flex items-center justify-between rounded-md px-3 py-1.5">
+                      <span className="font-body text-sm text-foreground">{r.profiles?.full_name || 'Unknown'}</span>
+                      <span className={`text-xs font-body px-2 py-0.5 rounded-full ${r.status === 'approved' ? 'bg-green-500/10 text-green-600' : 'bg-destructive/10 text-destructive'}`}>
+                        {r.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <>
-          {/* Create group */}
           <div className="rounded-xl bg-card border border-border p-5 space-y-4">
             <h2 className="font-heading text-lg font-semibold text-foreground">Create Group</h2>
             <Input value={name} onChange={e => setName(e.target.value)} placeholder="Group name..." className="font-body" />
@@ -248,7 +330,6 @@ export default function AdminGroups() {
             </Button>
           </div>
 
-          {/* Groups list */}
           <div className="space-y-3">
             {groups.map(g => (
               <button key={g.id} onClick={() => openGroup(g)} className="w-full rounded-lg bg-card border border-border p-4 flex items-center justify-between hover:border-accent/50 transition-all text-left">
