@@ -21,7 +21,7 @@ export default function AdminUsers() {
     setLoading(true);
     let query = supabase.from('profiles').select('*').order('created_at', { ascending: false });
     if (filter !== 'all') {
-      query = query.eq('status', filter);
+      query = query.eq('status', filter as 'pending_approval' | 'approved' | 'banned');
     }
     const { data } = await query;
     setUsers((data as UserProfile[]) || []);
