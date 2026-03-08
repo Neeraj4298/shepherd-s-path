@@ -3,7 +3,9 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Send, MessageSquare } from 'lucide-react';
+import { Label } from '@/components/ui/label';
+import { Send, MessageSquare, Plus, Trash2, ArrowLeft } from 'lucide-react';
+import { toast } from 'sonner';
 
 interface ChatRoom {
   id: string;
@@ -23,13 +25,20 @@ interface ChatMessage {
 }
 
 export default function ChatRoomsPage() {
-  const { user } = useAuth();
+  const { user, role } = useAuth();
+  const isAdmin = role === 'admin';
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<ChatRoom | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Admin create state
+  const [showCreate, setShowCreate] = useState(false);
+  const [newRoomName, setNewRoomName] = useState('');
+  const [newRoomType, setNewRoomType] = useState<'general' | 'prayer'>('general');
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     fetchRooms();
@@ -62,6 +71,27 @@ export default function ChatRoomsPage() {
     setLoading(false);
   };
 
+  const createRoom = async () => {
+    if (!newRoomName.trim()) return;
+    setCreating(true);
+    const { error } = await supabase.from('chat_rooms').insert({
+      name: newRoomName.trim(),
+      type: newRoomType,
+    });
+    if (error) { toast.error('Failed to create room'); setCreating(false); return; }
+    toast.success('Chat room created!');
+    setNewRoomName(''); setNewRoomType('general'); setShowCreate(false);
+    fetchRooms();
+    setCreating(false);
+  };
+
+  const deleteRoom = async (roomId: string) => {
+    await supabase.from('chat_rooms').delete().eq('id', roomId);
+    toast.success('Room deleted');
+    setSelectedRoom(null);
+    fetchRooms();
+  };
+
   const fetchMessages = async (roomId: string) => {
     const { data } = await supabase
       .from('chat_messages')
@@ -87,52 +117,102 @@ export default function ChatRoomsPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div>
-        <h1 className="font-heading text-3xl font-bold text-foreground">Chat Rooms</h1>
-        <p className="text-muted-foreground font-body mt-1">Fellowship with other believers in real-time</p>
-      </div>
-
       {!selectedRoom ? (
-        rooms.length === 0 ? (
-          <div className="rounded-lg bg-card border border-border p-8 text-center">
-            <MessageSquare className="mx-auto h-10 w-10 text-muted-foreground mb-3" />
-            <p className="text-muted-foreground font-body">No chat rooms available yet.</p>
+        <>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h1 className="font-heading text-3xl font-bold text-foreground">Chat Rooms</h1>
+              <p className="text-muted-foreground font-body mt-1">Fellowship with other believers in real-time</p>
+            </div>
+            {isAdmin && (
+              <Button variant="gold" onClick={() => setShowCreate(!showCreate)} className="font-body">
+                <Plus className="h-4 w-4 mr-2" /> Create Room
+              </Button>
+            )}
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {rooms.map(room => (
-              <button key={room.id} onClick={() => setSelectedRoom(room)} className="rounded-lg bg-card border border-border p-5 shadow-soft text-left hover:border-accent/50 hover:shadow-card transition-all">
-                <h3 className="font-heading text-lg font-semibold text-foreground">{room.name}</h3>
-                <p className="text-sm text-accent font-body font-medium mt-1 capitalize">{room.type} chat</p>
-              </button>
-            ))}
-          </div>
-        )
+
+          {/* Admin create form */}
+          {isAdmin && showCreate && (
+            <div className="rounded-xl bg-card border border-border p-5 space-y-4 shadow-soft">
+              <h2 className="font-heading text-lg font-semibold text-foreground">New Chat Room</h2>
+              <Input value={newRoomName} onChange={e => setNewRoomName(e.target.value)} placeholder="Room name..." className="font-body" />
+              <div className="space-y-2">
+                <Label className="font-body text-sm font-medium">Room Type</Label>
+                <select value={newRoomType} onChange={e => setNewRoomType(e.target.value as any)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-body">
+                  <option value="general">💬 General</option>
+                  <option value="prayer">🙏 Prayer</option>
+                </select>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="gold" onClick={createRoom} disabled={creating || !newRoomName.trim()} className="font-body">
+                  <Plus className="h-4 w-4 mr-2" /> Create
+                </Button>
+                <Button variant="outline" onClick={() => setShowCreate(false)} className="font-body">Cancel</Button>
+              </div>
+            </div>
+          )}
+
+          {rooms.length === 0 ? (
+            <div className="rounded-lg bg-card border border-border p-8 text-center">
+              <MessageSquare className="mx-auto h-10 w-10 text-muted-foreground mb-3" />
+              <p className="text-muted-foreground font-body">No chat rooms available yet.{isAdmin ? ' Create your first one above!' : ''}</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {rooms.map(room => (
+                <div key={room.id} className="rounded-xl bg-card border border-border p-5 shadow-soft hover:border-accent/50 hover:shadow-card transition-all">
+                  <div className="flex items-start justify-between">
+                    <button onClick={() => setSelectedRoom(room)} className="text-left flex-1">
+                      <h3 className="font-heading text-lg font-semibold text-foreground">{room.name}</h3>
+                      <p className="text-sm text-accent font-body font-medium mt-1 capitalize">{room.type} chat</p>
+                    </button>
+                    {isAdmin && (
+                      <Button size="sm" variant="ghost" onClick={() => deleteRoom(room.id)} className="text-destructive h-8 w-8 p-0">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                  <Button variant="gold" size="sm" onClick={() => setSelectedRoom(room)} className="font-body mt-3 w-full">
+                    Open Chat
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       ) : (
         <div className="flex flex-col h-[calc(100vh-220px)]">
           <div className="flex items-center gap-3 pb-4 border-b border-border">
-            <button onClick={() => setSelectedRoom(null)} className="text-sm text-accent hover:underline font-body">← Back</button>
-            <h2 className="font-heading text-lg font-semibold text-foreground">{selectedRoom.name}</h2>
+            <button onClick={() => setSelectedRoom(null)} className="text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-5 w-5" />
+            </button>
+            <h2 className="font-heading text-lg font-semibold text-foreground flex-1">{selectedRoom.name}</h2>
+            <span className="text-xs text-accent font-body font-medium capitalize bg-accent/10 px-2 py-0.5 rounded-full">{selectedRoom.type}</span>
           </div>
 
-          <div className="flex-1 overflow-auto py-4 space-y-3">
-            {messages.map(msg => (
-              <div key={msg.id} className={`flex flex-col ${msg.user_id === user?.id ? 'items-end' : 'items-start'}`}>
-                <span className="text-xs text-muted-foreground font-body mb-1">
-                  {(msg as any).profiles?.full_name || 'Unknown'}
-                </span>
-                <div className={`max-w-[75%] rounded-lg px-4 py-2 font-body text-sm ${
-                  msg.user_id === user?.id
-                    ? 'bg-accent text-accent-foreground'
-                    : 'bg-muted text-foreground'
-                }`}>
-                  {msg.content}
+          <div className="flex-1 overflow-auto py-4 space-y-2 px-1">
+            {messages.map(msg => {
+              const isMe = msg.user_id === user?.id;
+              return (
+                <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[75%] rounded-2xl px-4 py-2.5 ${
+                    isMe
+                      ? 'bg-accent text-accent-foreground rounded-br-md'
+                      : 'bg-card border border-border text-foreground rounded-bl-md'
+                  }`}>
+                    {!isMe && (
+                      <p className="text-xs font-semibold font-body mb-0.5 text-accent">
+                        {(msg as any).profiles?.full_name || 'Unknown'}
+                      </p>
+                    )}
+                    <p className="font-body text-sm">{msg.content}</p>
+                    <p className={`text-[10px] mt-1 ${isMe ? 'text-accent-foreground/50' : 'text-muted-foreground'}`}>
+                      {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
                 </div>
-                <span className="text-xs text-muted-foreground font-body mt-1">
-                  {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              </div>
-            ))}
+              );
+            })}
             <div ref={messagesEndRef} />
           </div>
 
@@ -142,9 +222,9 @@ export default function ChatRoomsPage() {
               onChange={e => setNewMessage(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && sendMessage()}
               placeholder="Type a message..."
-              className="font-body"
+              className="font-body rounded-full"
             />
-            <Button variant="gold" onClick={sendMessage} disabled={!newMessage.trim()}>
+            <Button variant="gold" onClick={sendMessage} disabled={!newMessage.trim()} className="rounded-full" size="icon">
               <Send className="h-4 w-4" />
             </Button>
           </div>
