@@ -3,7 +3,9 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Users, UserPlus, LogOut, Send, Lock, Eye, EyeOff, Megaphone, MessageSquare, ArrowLeft, Clock } from 'lucide-react';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { Users, UserPlus, LogOut, Send, Lock, Eye, EyeOff, Megaphone, MessageSquare, ArrowLeft, Clock, Plus, Check, X, Settings, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface StudyGroup {
@@ -30,8 +32,18 @@ interface ChatMessage {
 }
 
 interface Member {
+  id: string;
   user_id: string;
   profiles: { full_name: string } | null;
+}
+
+interface JoinRequest {
+  id: string;
+  user_id: string;
+  group_id: string;
+  status: string;
+  created_at: string;
+  profiles?: { full_name: string } | null;
 }
 
 export default function StudyGroupsPage() {
@@ -39,13 +51,24 @@ export default function StudyGroupsPage() {
   const [groups, setGroups] = useState<StudyGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedGroup, setSelectedGroup] = useState<StudyGroup | null>(null);
-  const [activeTab, setActiveTab] = useState<'chat' | 'members'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'members' | 'requests' | 'settings'>('chat');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [chatRoomId, setChatRoomId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isAdmin = role === 'admin';
+
+  // Admin create group state
+  const [showCreate, setShowCreate] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [newVisibility, setNewVisibility] = useState<'public' | 'private_visible' | 'private_hidden'>('public');
+  const [newChatMode, setNewChatMode] = useState<'open' | 'broadcast'>('open');
+  const [creating, setCreating] = useState(false);
+
+  // Admin join requests
+  const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
 
   useEffect(() => { fetchGroups(); }, []);
 
@@ -60,7 +83,6 @@ export default function StudyGroupsPage() {
     const { data: memberships } = await supabase.from('group_members').select('group_id').eq('user_id', user.id);
     const memberSet = new Set(memberships?.map(m => m.group_id) || []);
 
-    // Fetch join requests for this user
     const { data: requests } = await supabase.from('group_join_requests').select('group_id, status').eq('user_id', user.id);
     const requestMap = new Map(requests?.map(r => [r.group_id, r.status]) || []);
 
@@ -76,6 +98,79 @@ export default function StudyGroupsPage() {
 
     setGroups(enriched);
     setLoading(false);
+  };
+
+  const createGroup = async () => {
+    if (!newName.trim() || !user) return;
+    setCreating(true);
+    const { data: group, error } = await supabase.from('study_groups').insert({
+      name: newName.trim(),
+      description: newDesc.trim() || null,
+      created_by: user.id,
+      visibility: newVisibility,
+      chat_mode: newChatMode,
+    }).select().single();
+
+    if (error) { toast.error('Failed to create group'); setCreating(false); return; }
+
+    if (group) {
+      await supabase.from('chat_rooms').insert({ name: `${newName.trim()} Chat`, type: 'group' as const, group_id: group.id });
+      // Auto-add admin as member
+      await supabase.from('group_members').insert({ group_id: group.id, user_id: user.id });
+    }
+
+    toast.success('Group created!');
+    setNewName(''); setNewDesc(''); setNewVisibility('public'); setNewChatMode('open'); setShowCreate(false);
+    fetchGroups();
+    setCreating(false);
+  };
+
+  const deleteGroup = async (groupId: string) => {
+    await supabase.from('study_groups').delete().eq('id', groupId);
+    toast.success('Group deleted');
+    setSelectedGroup(null);
+    fetchGroups();
+  };
+
+  const fetchJoinRequests = async (groupId: string) => {
+    const { data } = await supabase
+      .from('group_join_requests')
+      .select('*')
+      .eq('group_id', groupId)
+      .order('created_at', { ascending: false });
+    if (data) {
+      const userIds = data.map(r => r.user_id);
+      if (userIds.length > 0) {
+        const { data: profiles } = await supabase.from('profiles').select('id, full_name').in('id', userIds);
+        const profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
+        setJoinRequests(data.map(r => ({ ...r, profiles: profileMap.get(r.user_id) || null })));
+      } else {
+        setJoinRequests([]);
+      }
+    }
+  };
+
+  const approveRequest = async (request: JoinRequest) => {
+    if (!selectedGroup) return;
+    await supabase.from('group_members').insert({ group_id: selectedGroup.id, user_id: request.user_id });
+    await supabase.from('group_join_requests').update({ status: 'approved' }).eq('id', request.id);
+    toast.success('Request approved');
+    fetchJoinRequests(selectedGroup.id);
+    fetchMembers(selectedGroup.id);
+  };
+
+  const rejectRequest = async (requestId: string) => {
+    await supabase.from('group_join_requests').update({ status: 'rejected' }).eq('id', requestId);
+    toast.success('Request rejected');
+    if (selectedGroup) fetchJoinRequests(selectedGroup.id);
+  };
+
+  const updateGroup = async (field: string, value: string) => {
+    if (!selectedGroup) return;
+    await supabase.from('study_groups').update({ [field]: value }).eq('id', selectedGroup.id);
+    toast.success('Group updated');
+    setSelectedGroup({ ...selectedGroup, [field]: value });
+    fetchGroups();
   };
 
   const joinGroup = async (groupId: string) => {
@@ -99,6 +194,17 @@ export default function StudyGroupsPage() {
     else { toast.success('Left group'); setSelectedGroup(null); fetchGroups(); }
   };
 
+  const fetchMembers = async (groupId: string) => {
+    const { data: mems } = await supabase.from('group_members').select('id, user_id, profiles(full_name)').eq('group_id', groupId);
+    if (mems) setMembers(mems as any);
+  };
+
+  const removeMember = async (memberId: string) => {
+    await supabase.from('group_members').delete().eq('id', memberId);
+    toast.success('Member removed');
+    if (selectedGroup) fetchMembers(selectedGroup.id);
+  };
+
   const openGroup = async (group: StudyGroup) => {
     setSelectedGroup(group);
     setActiveTab('chat');
@@ -113,8 +219,8 @@ export default function StudyGroupsPage() {
       setMessages([]);
     }
 
-    const { data: mems } = await supabase.from('group_members').select('user_id, profiles(full_name)').eq('group_id', group.id);
-    if (mems) setMembers(mems as any);
+    fetchMembers(group.id);
+    if (isAdmin) fetchJoinRequests(group.id);
   };
 
   const fetchMessages = async (roomId: string) => {
@@ -160,8 +266,11 @@ export default function StudyGroupsPage() {
     return <span className="inline-flex items-center gap-1 text-xs font-body text-muted-foreground bg-muted px-2 py-0.5 rounded-full"><EyeOff className="h-3 w-3" />Hidden</span>;
   };
 
+  const pendingRequests = joinRequests.filter(r => r.status === 'pending');
+
   if (loading) return <div className="flex justify-center py-20"><div className="h-8 w-8 animate-spin rounded-full border-4 border-accent border-t-transparent" /></div>;
 
+  // ──── Selected group view ────
   if (selectedGroup) {
     return (
       <div className="flex flex-col h-[calc(100vh-140px)] animate-fade-in">
@@ -188,6 +297,21 @@ export default function StudyGroupsPage() {
             <Button size="sm" variant={activeTab === 'members' ? 'default' : 'outline'} onClick={() => setActiveTab('members')} className="font-body">
               <Users className="h-4 w-4" />
             </Button>
+            {isAdmin && (
+              <>
+                <Button size="sm" variant={activeTab === 'requests' ? 'default' : 'outline'} onClick={() => setActiveTab('requests')} className="font-body relative">
+                  <UserPlus className="h-4 w-4" />
+                  {pendingRequests.length > 0 && (
+                    <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-destructive text-destructive-foreground text-[10px] flex items-center justify-center">
+                      {pendingRequests.length}
+                    </span>
+                  )}
+                </Button>
+                <Button size="sm" variant={activeTab === 'settings' ? 'default' : 'outline'} onClick={() => setActiveTab('settings')} className="font-body">
+                  <Settings className="h-4 w-4" />
+                </Button>
+              </>
+            )}
             {selectedGroup.is_member && (
               <Button size="sm" variant="outline" onClick={() => leaveGroup(selectedGroup.id)} className="font-body text-destructive">
                 <LogOut className="h-4 w-4" />
@@ -196,18 +320,101 @@ export default function StudyGroupsPage() {
           </div>
         </div>
 
-        {activeTab === 'members' ? (
+        {/* ── Members tab ── */}
+        {activeTab === 'members' && (
           <div className="flex-1 overflow-auto py-4 space-y-1">
-            {members.map((m, i) => (
-              <div key={i} className="flex items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-muted/30">
-                <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center text-xs font-bold text-accent font-body">
-                  {((m as any).profiles?.full_name || '?')[0].toUpperCase()}
+            {members.map(m => (
+              <div key={m.id} className="flex items-center justify-between rounded-lg px-3 py-2.5 hover:bg-muted/30">
+                <div className="flex items-center gap-3">
+                  <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center text-xs font-bold text-accent font-body">
+                    {(m.profiles?.full_name || '?')[0].toUpperCase()}
+                  </div>
+                  <span className="font-body text-sm text-foreground">{m.profiles?.full_name || 'Unknown'}</span>
                 </div>
-                <span className="font-body text-sm text-foreground">{(m as any).profiles?.full_name || 'Unknown'}</span>
+                {isAdmin && m.user_id !== user?.id && (
+                  <Button size="sm" variant="ghost" onClick={() => removeMember(m.id)} className="text-destructive h-8 w-8 p-0">
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                )}
               </div>
             ))}
           </div>
-        ) : (
+        )}
+
+        {/* ── Join Requests tab (admin only) ── */}
+        {activeTab === 'requests' && isAdmin && (
+          <div className="flex-1 overflow-auto py-4 space-y-3">
+            <h3 className="font-heading text-lg font-semibold text-foreground">Join Requests</h3>
+            {pendingRequests.length > 0 ? (
+              <div className="space-y-2">
+                {pendingRequests.map(r => (
+                  <div key={r.id} className="flex items-center justify-between rounded-md px-3 py-2 bg-accent/5 border border-accent/20">
+                    <div>
+                      <span className="font-body text-sm text-foreground">{r.profiles?.full_name || 'Unknown'}</span>
+                      <p className="text-xs text-muted-foreground font-body">{new Date(r.created_at).toLocaleDateString()}</p>
+                    </div>
+                    <div className="flex gap-1">
+                      <Button size="sm" variant="gold" onClick={() => approveRequest(r)} className="h-8 px-3 font-body">
+                        <Check className="h-3 w-3 mr-1" /> Approve
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => rejectRequest(r.id)} className="h-8 px-3 text-destructive font-body">
+                        <X className="h-3 w-3 mr-1" /> Reject
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-muted-foreground font-body text-sm text-center py-4">No pending join requests</p>
+            )}
+
+            {joinRequests.filter(r => r.status !== 'pending').length > 0 && (
+              <div className="space-y-1 pt-2 border-t border-border">
+                <p className="text-xs text-muted-foreground font-body font-medium uppercase tracking-wide">History</p>
+                {joinRequests.filter(r => r.status !== 'pending').map(r => (
+                  <div key={r.id} className="flex items-center justify-between rounded-md px-3 py-1.5">
+                    <span className="font-body text-sm text-foreground">{r.profiles?.full_name || 'Unknown'}</span>
+                    <span className={`text-xs font-body px-2 py-0.5 rounded-full ${r.status === 'approved' ? 'bg-green-500/10 text-green-600' : 'bg-destructive/10 text-destructive'}`}>
+                      {r.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Settings tab (admin only) ── */}
+        {activeTab === 'settings' && isAdmin && (
+          <div className="flex-1 overflow-auto py-4 space-y-4">
+            <h3 className="font-heading text-lg font-semibold text-foreground">Group Settings</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label className="font-body font-medium">Visibility</Label>
+                <select value={selectedGroup.visibility} onChange={e => updateGroup('visibility', e.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-body">
+                  <option value="public">🌐 Public — Anyone can see & join</option>
+                  <option value="private_visible">🔒 Private (Visible) — Users see but must request</option>
+                  <option value="private_hidden">👁️‍🗨️ Private (Hidden) — Only members see it</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label className="font-body font-medium">Chat Mode</Label>
+                <select value={selectedGroup.chat_mode} onChange={e => updateGroup('chat_mode', e.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-body">
+                  <option value="open">💬 Open — Everyone can chat</option>
+                  <option value="broadcast">📢 Broadcast — Admin only messages</option>
+                </select>
+              </div>
+            </div>
+            <div className="pt-4 border-t border-border">
+              <Button variant="outline" onClick={() => deleteGroup(selectedGroup.id)} className="text-destructive font-body">
+                <Trash2 className="h-4 w-4 mr-1" /> Delete Group
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Chat tab ── */}
+        {activeTab === 'chat' && (
           <>
             <div className="flex-1 overflow-auto py-4 space-y-2 px-1">
               {selectedGroup.chat_mode === 'broadcast' && !isAdmin && (
@@ -267,17 +474,57 @@ export default function StudyGroupsPage() {
     );
   }
 
+  // ──── Group list view ────
   return (
     <div className="space-y-6 animate-fade-in">
-      <div>
-        <h1 className="font-heading text-3xl font-bold text-foreground">Study Groups</h1>
-        <p className="text-muted-foreground font-body mt-1">Join a group and grow together in fellowship</p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="font-heading text-3xl font-bold text-foreground">Study Groups</h1>
+          <p className="text-muted-foreground font-body mt-1">Join a group and grow together in fellowship</p>
+        </div>
+        {isAdmin && (
+          <Button variant="gold" onClick={() => setShowCreate(!showCreate)} className="font-body">
+            <Plus className="h-4 w-4 mr-2" /> Create Group
+          </Button>
+        )}
       </div>
+
+      {/* Admin create group form */}
+      {isAdmin && showCreate && (
+        <div className="rounded-xl bg-card border border-border p-5 space-y-4 shadow-soft">
+          <h2 className="font-heading text-lg font-semibold text-foreground">New Group</h2>
+          <Input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Group name..." className="font-body" />
+          <Textarea value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="Description..." rows={2} className="font-body" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="font-body text-sm font-medium">Visibility</Label>
+              <select value={newVisibility} onChange={e => setNewVisibility(e.target.value as any)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-body">
+                <option value="public">🌐 Public</option>
+                <option value="private_visible">🔒 Private (Visible)</option>
+                <option value="private_hidden">👁️‍🗨️ Private (Hidden)</option>
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label className="font-body text-sm font-medium">Chat Mode</Label>
+              <select value={newChatMode} onChange={e => setNewChatMode(e.target.value as any)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-body">
+                <option value="open">💬 Open Chat</option>
+                <option value="broadcast">📢 Broadcast (Admin only)</option>
+              </select>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="gold" onClick={createGroup} disabled={creating || !newName.trim()} className="font-body">
+              <Plus className="h-4 w-4 mr-2" /> Create
+            </Button>
+            <Button variant="outline" onClick={() => setShowCreate(false)} className="font-body">Cancel</Button>
+          </div>
+        </div>
+      )}
 
       {groups.length === 0 ? (
         <div className="rounded-lg bg-card border border-border p-8 text-center">
           <Users className="mx-auto h-10 w-10 text-muted-foreground mb-3" />
-          <p className="text-muted-foreground font-body">No study groups available yet. Ask your admin to create one!</p>
+          <p className="text-muted-foreground font-body">No study groups available yet.{isAdmin ? ' Create your first one above!' : ' Ask your admin to create one!'}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -299,14 +546,16 @@ export default function StudyGroupsPage() {
               </div>
 
               <div className="flex gap-2 mt-4">
-                {g.is_member ? (
+                {g.is_member || isAdmin ? (
                   <>
                     <Button variant="gold" size="sm" onClick={() => openGroup(g)} className="font-body flex-1">
                       Open Group
                     </Button>
-                    <Button variant="outline" size="sm" onClick={() => leaveGroup(g.id)} className="font-body">
-                      <LogOut className="h-4 w-4" />
-                    </Button>
+                    {g.is_member && !isAdmin && (
+                      <Button variant="outline" size="sm" onClick={() => leaveGroup(g.id)} className="font-body">
+                        <LogOut className="h-4 w-4" />
+                      </Button>
+                    )}
                   </>
                 ) : g.visibility === 'public' ? (
                   <Button variant="gold" size="sm" onClick={() => joinGroup(g.id)} className="font-body flex-1">
